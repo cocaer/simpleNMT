@@ -4,7 +4,7 @@ import torch
 import torch.utils.data as data
 
 
-PAD_WORD = -1
+PAD_WORD = -1 
 
 class Dataset(data.Dataset):
     """Custom data.Dataset compatible with data.DataLoader."""
@@ -15,6 +15,7 @@ class Dataset(data.Dataset):
         self.num_total_seqs = len(self.src_seqs)
         self.src_word2id = src_word2id
         self.trg_word2id = trg_word2id
+        self.pad_index = src_word2id.index('<pad>')
 
     def __getitem__(self, index):
         """Returns one data pair (source and target)."""
@@ -74,7 +75,7 @@ def collate_fn(data):
     return src_seqs, src_lengths, trg_seqs, trg_lengths
 
 
-def get_loader(src_path, trg_path, src_word2id, trg_word2id, batch_size=100):
+def get_train_loader(src_path, trg_path, src_word2id, trg_word2id, batch_size, ngpu, gpu_id):
     """Returns data loader for custom dataset.
     Args:
         src_path: txt file path for source domain.
@@ -85,16 +86,28 @@ def get_loader(src_path, trg_path, src_word2id, trg_word2id, batch_size=100):
     Returns:
         data_loader: data loader for custom dataset.
     """
-    # build a custom dataset
     dataset = Dataset(src_path, trg_path, src_word2id, trg_word2id)
     global PAD_WORD
     PAD_WORD = src_word2id.index('<pad>')
-    # data loader for custome dataset
-    # this will return (src_seqs, src_lengths, trg_seqs, trg_lengths) for each iteration
-    # please see collate_fn for details
+
+    sampler =  torch.utils.data.distributed.DistributedSampler(
+        dataset,
+        num_replicas=ngpu,
+        rank=gpu_id
+    )
     data_loader = torch.utils.data.DataLoader(dataset=dataset,
                                               batch_size=batch_size,
                                               shuffle=True,
                                               collate_fn=collate_fn)
-
     return data_loader
+
+def get_valid_loader(src_path, trg_path, src_word2id, trg_word2id, batch_size):
+    dataset = Dataset(src_path, trg_path, src_word2id, trg_word2id)
+    global PAD_WORD
+    PAD_WORD = src_word2id.index('<pad>')
+    data_loader = torch.utils.data.DataLoader(dataset=dataset,
+                                              batch_size=batch_size,
+                                              shuffle=False,
+                                              collate_fn=collate_fn)
+    return data_loader
+                      

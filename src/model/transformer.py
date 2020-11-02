@@ -12,12 +12,22 @@ class TransformerModel(nn.Module):
         self.decoder = TransformerDecoder(d_model, nhead, num_decoder_layers, dim_feedforward, dropout, activation, src_dictionary)
         self.src_dictionary = src_dictionary
         self.tgt_dictionary = tgt_dictionary
+    
 
-    def forward(self, src, tgt):
+    def forward(self, mode, **kwargs):
+        if mode == 'fwd':
+            return self.fwd(**kwargs)
+        else:
+            return self.predict(**kwargs)
+
+    def fwd(self, src, tgt):
         encoder_out = self.encoder(src)
         decoder_out = self.decoder(tgt, encoder_out)
         return decoder_out
-        
+    
+    def predict(self, tensor, y):
+        return self.decoder.predict(tensor, y)
+
 
 class TransformerEncoder(nn.Module):
     def __init__(self, d_model=512, nhead=8, num_encoder_layers=8, dim_feedforward=2048,
@@ -76,10 +86,11 @@ class TransformerDecoder(nn.Module):
                             memory_key_padding_mask=encoder_out['src_key_padding_mask'])
         return output
 
-    def compute_mt_loss(self, tensor, y):
+
+    def predict(self, tensor, y):
         no_pad_mask = y != self.dictionary.pad_index
         y = y[no_pad_mask]
         masked_tensor = tensor[no_pad_mask.unsqueeze(-1).expand_as(tensor)].view(-1,self.d_model)
         scores = self.output_layer(masked_tensor).view(-1, len(self.dictionary))
         loss = F.cross_entropy(scores, y, reduction='mean')
-        return loss, scores
+        return loss, scores   
