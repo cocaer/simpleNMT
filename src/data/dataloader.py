@@ -10,8 +10,8 @@ class Dataset(data.Dataset):
     """Custom data.Dataset compatible with data.DataLoader."""
     def __init__(self, src_path, trg_path, src_word2id, trg_word2id):
         """Reads source and target sequences from txt files."""
-        self.src_seqs = open(src_path).readlines()
-        self.trg_seqs = open(trg_path).readlines()
+        self.src_seqs = open(src_path).read().splitlines()
+        self.trg_seqs = open(trg_path).read().splitlines()
         self.num_total_seqs = len(self.src_seqs)
         self.src_word2id = src_word2id
         self.trg_word2id = trg_word2id
@@ -75,7 +75,7 @@ def collate_fn(data):
     return src_seqs, src_lengths, trg_seqs, trg_lengths
 
 
-def get_train_loader(src_path, trg_path, src_word2id, trg_word2id, batch_size, ngpu, gpu_id):
+def get_train_loader(src_path, trg_path, src_word2id, trg_word2id, batch_size, world_size, rank):
     """Returns data loader for custom dataset.
     Args:
         src_path: txt file path for source domain.
@@ -92,8 +92,8 @@ def get_train_loader(src_path, trg_path, src_word2id, trg_word2id, batch_size, n
 
     sampler =  torch.utils.data.distributed.DistributedSampler(
         dataset,
-        num_replicas=ngpu,
-        rank=gpu_id
+        num_replicas=world_size,
+        rank=rank
     )
     data_loader = torch.utils.data.DataLoader(dataset=dataset,
                                               batch_size=batch_size,

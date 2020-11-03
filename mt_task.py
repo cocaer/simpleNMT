@@ -1,3 +1,6 @@
+import os
+import torch
+import argparse
 from src.data.vocabulary import  Dictionary
 from src.data  import dataloader
 from src.model.transformer import TransformerModel
@@ -5,70 +8,58 @@ from src.optim.optim import get_optimizer
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
-import os
-import torch
+from src.utils.logger import create_logger
 
-vocab_src = '/data4/bjji/data/ldc/vocab.ch'
-vocab_tgt = '/data4/bjji/data/ldc/vocab.en'
 
-src_vocab = Dictionary.read_vocab(vocab_src)
-tgt_vocab = Dictionary.read_vocab(vocab_tgt)
-
-src_path = '/data4/bjji/data/ldc/test.bpe.ch'
-tgt_path = '/data4/bjji/data/ldc/test.bpe.en'
-
-optim_args = "adam_inverse_sqrt,beta1=0.9,beta2=0.98,lr=0.0005"
-epoch_size = 50
-batch_size = 20
-seed = 100
-world_size = 4
-dump_path = "checkpoint/test"
-
-def setup(gpu_id, ngpu, master_addr='localhost', master_port='12345'):
+def setup(rank, world_size, master_addr='localhost', master_port='12345'):
     os.environ['MASTER_ADDR'] = 'localhost'#master_addr
-    os.environ['MASTER_PORT'] = '12355'
-    dist.init_process_group('gloo', rank=gpu_id, world_size=ngpu)
+    os.environ['MASTER_PORT'] = master_port
+    dist.init_process_group('nccl', rank=rank, world_size=world_size)
 
-
-def run_train(fn, world_size):
+def run_train(fn, args):
     mp.spawn(fn,
-            args=(world_size,'localhost','12345'),
-            nprocs=world_size,
+            args=(args, ),
+            nprocs=args.world_size,
             join=True)
-
-
 
 class Trainer(object):
 
     def __init__(self, model, data, args):
-        super(Trainer, self).__init__()
 
+        super(Trainer, self).__init__()
         self.model = model
         self.data = data['dataloader']
-        self.optimizer  = get_optimizer(self.model.parameters(), optim_args)
+        self.optimizer  = get_optimizer(self.model.parameters(), args.optim)
         self._best_valid_loss = float('inf')
         self.dump_path = args.dump_path
         self.world_size = args.world_size
-
+        self.args = args
+        self.logger = create_logger(os.path.join(self.dump_path,'train.log'), self.args.local_rank)
         if args.reload_path != "":
             self.load_checkpoint(args.reload_path)
 
-    def init_logger(self):
-        pass 
-    
     def mt_step(self):
         self.model.train()
-        for i, batch in enumerate(iter(self.data['train'])):
-            src, _, tgt, _ = batch
-            y = tgt[:,:-1]    
-            y_label = tgt[:,1:]
-            src, y, y_label = src.cuda(), y.cuda(), y_label.cuda()
-            decoder_out = self.model('fwd', src=src.t(), tgt=y.t())
-            loss, _ = self.model('predict', tensor=decoder_out.transpose(0,1), y=y_label)
-            print(loss.item())
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()   
+        n_sentences = 0
+        while n_sentences < self.args.epoch_size:
+            for i, batch in enumerate(iter(self.data['train'])):
+                src, _, tgt, _ = batch
+                y = tgt[:,:-1]    
+                y_label = tgt[:,1:]
+                src, y, y_label = src.cuda(), y.cuda(), y_label.cuda()
+                decoder_out = self.model('fwd', src=src.t(), tgt=y.t())
+                loss, _ = self.model('predict', tensor=decoder_out.transpose(0,1), y=y_label)
+
+                self.optimizer.zero_grad()
+                loss.backward()
+                self.optimizer.step()   
+
+                n_sentences += y_label.size(0)
+                if n_sentences >= self.args.epoch_size:
+                    break
+                if i % 20 == 0:
+                    self.logger.info(f"loss: {loss.item():.4f}")
+
 
     def load_checkpoint(self, path):
         
@@ -77,13 +68,13 @@ class Trainer(object):
 
         checkpoint_path = path
         data = torch.load(checkpoint_path, map_location='cpu')
-
+        self._best_valid_loss = data['best_valid_loss']
+        
         try:
             self.model.load_state_dict({k[len('module.'):] : data['module'][k]  for k in data['module']})
         except RuntimeError:
             self.model.load_state_dict({'module.'+ k : data['module'][k]  for k in data['module']})
 
-        
         for group_id, param_group in enumerate(self.optimizer.param_groups):
             if 'num_updates' not in param_group:
                 continue
@@ -94,16 +85,16 @@ class Trainer(object):
         print(f"Load model from {path}")
 
     def save_checkpoint(self, name):
+
+        if self.args.local_rank != 0:
+            return 
+
         data = {}
         checkpoint_path = os.path.join(self.dump_path, f"checkpoint_{name}.pth")
-
-        if not os.path.exists(self.dump_path):
-            os.makedirs(self.dump_path)
-
         data['optimizer'] = self.optimizer.state_dict()
         data['module'] = self.model.module.state_dict() if self.world_size > 1 else self.model.state_dict()
+        data['best_valid_loss'] = self._best_valid_loss
         torch.save(data, checkpoint_path)
-
 
     def save_best_checkpoint(self, epoch, valid_loss):
         if valid_loss < self._best_valid_loss:
@@ -114,6 +105,7 @@ class Trainer(object):
         valid_loss = 0
         ntokens = 0.1
         self.model.eval()
+       
         for i, batch in enumerate(iter(self.data['valid'])):
             src, _, tgt, _ = batch
             y = tgt[:,:-1]    
@@ -123,59 +115,116 @@ class Trainer(object):
             loss, _ = self.model('predict', tensor=decoder_out.transpose(0,1), y=y_label)
             ntokens += y_label.size(1)
             valid_loss += loss.item() * y_label.size(1) 
-        
-        print(f"ntokens:{ntokens}")
+       
         valid_loss /= ntokens
-        print(f"loss on valid set is {valid_loss}")
+        self.logger.info(f"=============== Evaluation ==================")
+        self.logger.info(f"loss on valid set: {valid_loss}")
         self.save_best_checkpoint(epoch, valid_loss)
 
+def train(rank,  args):
+    print(f"Running basic DDP example on rank {rank} {args.master_port}.")
+    setup(rank, args.world_size,  args.master_port)
+    args.local_rank = rank
 
-
-
-class meta:
-    pass
-
-def train(gpu_id, ngpu, master_addr, master_port):
-    print(f"Running basic DDP example on rank {gpu_id} {master_port}.")
-    setup(gpu_id, ngpu, master_addr, master_port)
-
-    torch.manual_seed(seed)
-    torch.cuda.set_device(gpu_id)
+    torch.manual_seed(args.seed)
+    torch.cuda.set_device(rank)
     
+    src_vocab = Dictionary.read_vocab(args.vocab_src)
+    tgt_vocab = Dictionary.read_vocab(args.vocab_tgt)
 
     # model init 
     model = TransformerModel(src_dictionary=src_vocab, tgt_dictionary=tgt_vocab)
-    model.to(gpu_id)
-    model = DDP(model, device_ids=[gpu_id])
-
+    model.to(rank)
+    model = DDP(model, device_ids=[rank])
 
     # data load
-    train_loader = dataloader.get_train_loader(src_path, tgt_path, src_vocab, tgt_vocab,  batch_size=batch_size, ngpu=ngpu, gpu_id=gpu_id)
-    valid_loader = dataloader.get_valid_loader(src_path, tgt_path, src_vocab, tgt_vocab,  batch_size=batch_size)
+    train_loader = dataloader.get_train_loader(args.train_src, args.train_tgt, src_vocab, tgt_vocab,  batch_size=args.batch_size, world_size=args.world_size, rank=rank)
+    valid_loader = dataloader.get_valid_loader(args.valid_src, args.train_tgt, src_vocab, tgt_vocab,  batch_size=args.batch_size)
 
     data = {
         'dataloader': {'train': train_loader, 'valid':valid_loader}
     }
 
 
-    args = meta()
-    args.epoch_size = epoch_size
-    args.world_size = world_size
-    args.dump_path = dump_path
-    args.reload_path = ""
-
     trainer = Trainer(model, data,  args)
-
     for epoch in range(args.epoch_size):
         trainer.mt_step()
         trainer.evaluate(epoch)
-        # trainer.save_checkpoint(epoch)
+        trainer.save_checkpoint(epoch)
 
-def translate():
-    args = meta()
-    args.reload_path = ""
-    args.src = ""
-    
+def translate(args):
+    batch_size = args.batch_size
+
+    src_vocab = Dictionary.read_vocab(args.vocab_src)
+    tgt_vocab = Dictionary.read_vocab(args.vocab_tgt)
+    data = torch.load(args.reload_path, map_location='cpu')
+    model = TransformerModel(src_dictionary=src_vocab, tgt_dictionary=tgt_vocab)
+    model.load_state_dict({k : data['module'][k]  for k in data['module']})
+    model.cuda()
+
+    src_sent =  open(args.src, "r").readlines()
+    for i in range(0, len(src_sent), batch_size):
+        word_ids = [torch.LongTensor([src_vocab.index(w) for w in s.strip().split()]) 
+                                                for s in src_sent[i:i+batch_size]]
+        lengths = torch.LongTensor([len(s)+2 for s in word_ids])
+        batch = torch.LongTensor(lengths.max().item(), lengths.size(0)).fill_(src_vocab.pad_index)
+        batch[0] = src_vocab.bos_index
+        for j,s in enumerate(word_ids):
+            if lengths[j] > 2:
+                batch[1:lengths[j]-1,j].copy_(s)
+            batch[lengths[j]-1,j] = src_vocab.eos_index
+        batch = batch.cuda() 
+        tensor = model.encoder(batch)
+        generated = model.decoder.generate_greedy(tensor)
+        for j, s in enumerate(src_sent[i:i+batch_size]):
+            print(f"Source_{i+j}: {s.strip()}")
+            hypo = []
+            for w in generated[j][1:]:
+                if tgt_vocab[w.item()] == '</s>':
+                    break
+                hypo.append(tgt_vocab[w.item()])
+            hypo = " ".join(hypo)
+            print(f"Target_{i+j}: {hypo}\n")
+
+
+def init_exp(args):
+    if not os.path.exists(args.dump_path):
+        os.makedirs(args.dump_path)
 
 if __name__ == "__main__":
-    run_train(train, world_size)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("mode", type=str, default="train", choices=['train','infer'])
+    
+
+    # for train
+    parser.add_argument("--vocab_src", type=str, default="")
+    parser.add_argument("--vocab_tgt", type=str, default="")
+    
+    parser.add_argument("--train_src", type=str, default="")
+    parser.add_argument("--train_tgt", type=str, default="")
+    
+    parser.add_argument("--valid_src", type=str, default="")
+    parser.add_argument("--valid_tgt", type=str, default="")
+
+    parser.add_argument("--batch_size", type=int, default=20)
+    parser.add_argument("--epoch_size", type=int, default=200000)
+    parser.add_argument("--max_epoch", type=int, default=20)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--master_port", type=int, default=23451)
+    parser.add_argument("--world_size", type=int, default=4)
+
+    parser.add_argument("--dump_path", type=str, default="checkpoint/ldc")
+    parser.add_argument("--reload_path", type=str, default="")
+    parser.add_argument("--optim", type=str, default="adam_inverse_sqrt,beta1=0.9,beta2=0.98,lr=0.0005")
+
+    # for inference
+    parser.add_argument("--src", type=str, default="")
+    
+    args = parser.parse_args()
+
+    init_exp(args)
+    if args.mode == 'train': 
+        run_train(train, args)
+    else:
+        translate(args)
+
