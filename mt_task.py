@@ -78,7 +78,6 @@ class Trainer(object):
         for group_id, param_group in enumerate(self.optimizer.param_groups):
             if 'num_updates' not in param_group:
                 continue
-
             param_group['num_updates'] = data['optimizer']['param_groups'][group_id]['num_updates']
             param_group['lr'] = self.optimizer.get_lr_for_step(param_group['num_updates'])
 
@@ -136,7 +135,7 @@ def train(rank,  args):
     model = TransformerModel(src_dictionary=src_vocab, tgt_dictionary=tgt_vocab)
     model.to(rank)
     model = DDP(model, device_ids=[rank])
-
+    print(model)
     # data load
     train_loader = dataloader.get_train_loader(args.train_src, args.train_tgt, src_vocab, tgt_vocab,  batch_size=args.batch_size, world_size=args.world_size, rank=rank)
     valid_loader = dataloader.get_valid_loader(args.valid_src, args.train_tgt, src_vocab, tgt_vocab,  batch_size=args.batch_size)
@@ -161,6 +160,7 @@ def translate(args):
     model = TransformerModel(src_dictionary=src_vocab, tgt_dictionary=tgt_vocab)
     model.load_state_dict({k : data['module'][k]  for k in data['module']})
     model.cuda()
+    model.eval()
 
     src_sent =  open(args.src, "r").readlines()
     for i in range(0, len(src_sent), batch_size):
@@ -174,14 +174,16 @@ def translate(args):
                 batch[1:lengths[j]-1,j].copy_(s)
             batch[lengths[j]-1,j] = src_vocab.eos_index
         batch = batch.cuda() 
-        tensor = model.encoder(batch)
-        generated = model.decoder.generate_greedy(tensor)
+        encoder_out = model.encoder(batch)
+        with torch.no_grad():
+            generated = model.decoder.generate_beam(encoder_out, beam_size=5)
+
         for j, s in enumerate(src_sent[i:i+batch_size]):
             print(f"Source_{i+j}: {s.strip()}")
             hypo = []
             for w in generated[j][1:]:
                 if tgt_vocab[w.item()] == '</s>':
-                    break
+                   break
                 hypo.append(tgt_vocab[w.item()])
             hypo = " ".join(hypo)
             print(f"Target_{i+j}: {hypo}\n")

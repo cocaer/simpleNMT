@@ -97,8 +97,9 @@ def get_train_loader(src_path, trg_path, src_word2id, trg_word2id, batch_size, w
     )
     data_loader = torch.utils.data.DataLoader(dataset=dataset,
                                               batch_size=batch_size,
-                                              shuffle=True,
-                                              collate_fn=collate_fn)
+                                              collate_fn=collate_fn,
+                                              sampler = sampler,
+                                              )
     return data_loader
 
 def get_valid_loader(src_path, trg_path, src_word2id, trg_word2id, batch_size):
