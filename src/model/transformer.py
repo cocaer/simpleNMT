@@ -20,18 +20,18 @@ def Embedding(num_embeddings, embedding_dim, padding_idx=None):
 
 def Linear(in_features, out_features, bias=True):
     m = nn.Linear(in_features, out_features, bias)
-    nn.init.xavier_uniform_(m.weight)
-    if bias:
-        nn.init.constant_(m.bias, 0.0)
+    # nn.init.xavier_uniform_(m.weight)
+    # if bias:
+    #     nn.init.constant_(m.bias, 0.0)
     return m
 
 class TransformerModel(nn.Module):
-    def __init__(self, d_model=512, nhead=8, num_encoder_layers=6, num_decoder_layers=6, dim_feedforward=2048, \
+    def __init__(self, d_model=512, nhead=8, num_encoder_layers=6, num_decoder_layers=6, \
                 dropout=0.3, attention_dropout=0.1, activation='relu', src_dictionary=None, tgt_dictionary=None):
         
         super(TransformerModel, self).__init__()
-        self.encoder = TransformerEncoder(d_model, nhead, num_encoder_layers, dim_feedforward, dropout, attention_dropout, activation, src_dictionary=src_dictionary)
-        self.decoder = TransformerDecoder(d_model, nhead, num_decoder_layers, dim_feedforward, dropout, attention_dropout, activation, tgt_dictionary=tgt_dictionary)
+        self.encoder = TransformerEncoder(d_model, nhead, num_encoder_layers, dropout, attention_dropout, activation, src_dictionary=src_dictionary)
+        self.decoder = TransformerDecoder(d_model, nhead, num_decoder_layers, dropout, attention_dropout, activation, tgt_dictionary=tgt_dictionary)
         self.src_dictionary = src_dictionary
         self.tgt_dictionary = tgt_dictionary
 
@@ -51,15 +51,15 @@ class TransformerModel(nn.Module):
 
 
 class TransformerEncoder(nn.Module):
-    def __init__(self, d_model=512, nhead=8, num_encoder_layers=6, dim_feedforward=2048,
-                 dropout=0.3, attention_dropout=0.1,activation='relu', src_dictionary=None):
+    def __init__(self, d_model=512, nhead=8, num_encoder_layers=6, 
+                 dropout=0.3, attention_dropout=0.1, activation='relu', src_dictionary=None):
 
         super(TransformerEncoder, self).__init__()
         self.dictionary = src_dictionary
         self.embedding = Embedding(len(self.dictionary), d_model, padding_idx = self.dictionary.pad_index)
         self.num_layers = num_encoder_layers
         self.layer = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward, dropout=attention_dropout, activation=activation),
+            nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=d_model * 4, dropout=attention_dropout, activation=activation),
             num_layers = self.num_layers,
             )
         self.position_embedding = Embedding(MAX_POSITIONS, d_model)
@@ -88,7 +88,7 @@ class TransformerEncoder(nn.Module):
 
 
 class TransformerDecoder(nn.Module):
-    def __init__(self, d_model=512, nhead=8, num_decoder_layers=6, dim_feedforward=2048,
+    def __init__(self, d_model=512, nhead=8, num_decoder_layers=6,
                  dropout=0.3, attention_dropout=0.1, activation='relu', tgt_dictionary=None):
         
         super(TransformerDecoder, self).__init__()
@@ -96,7 +96,7 @@ class TransformerDecoder(nn.Module):
         self.embedding = Embedding(len(self.dictionary), d_model, padding_idx=self.dictionary.pad_index)
         self.num_layers = num_decoder_layers
         self.layer = nn.TransformerDecoder(
-            nn.TransformerDecoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward, dropout=attention_dropout, activation=activation),
+            nn.TransformerDecoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=d_model*4, dropout=attention_dropout, activation=activation),
             num_layers = self.num_layers,
         )
         self.output_layer = Linear(d_model, len(self.dictionary), bias=True)
@@ -202,7 +202,6 @@ class TransformerDecoder(nn.Module):
             cur_len += 1
             if all(done):
                 break
-
 
         # add eos
         if not all(done):

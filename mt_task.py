@@ -83,7 +83,7 @@ class Trainer(object):
 
         print(f"Load model from {path}")
 
-    def save_checkpoint(self, name):
+    def save_checkpoint(self, name="", epoch=0):
 
         if self.args.local_rank != 0:
             return 
@@ -93,11 +93,12 @@ class Trainer(object):
         data['optimizer'] = self.optimizer.state_dict()
         data['module'] = self.model.module.state_dict() if self.world_size > 1 else self.model.state_dict()
         data['best_valid_loss'] = self._best_valid_loss
+        data['epoch'] = epoch
         torch.save(data, checkpoint_path)
 
     def save_best_checkpoint(self, epoch, valid_loss):
         if valid_loss < self._best_valid_loss:
-            self.save_checkpoint('best')
+            self.save_checkpoint(f'best', epoch)
             self._best_valid_loss = valid_loss
 
     def evaluate(self, epoch):
@@ -124,21 +125,29 @@ def train(rank,  args):
     print(f"Running basic DDP example on rank {rank} {args.master_port}.")
     setup(rank, args.world_size,  args.master_port)
     args.local_rank = rank
-
     torch.manual_seed(args.seed)
     torch.cuda.set_device(rank)
-    
     src_vocab = Dictionary.read_vocab(args.vocab_src)
     tgt_vocab = Dictionary.read_vocab(args.vocab_tgt)
 
     # model init 
-    model = TransformerModel(src_dictionary=src_vocab, tgt_dictionary=tgt_vocab)
+    model = TransformerModel(d_model=args.d_model, 
+                            nhead=args.nhead, 
+                            num_encoder_layers=args.num_encoder_layers,
+                            num_decoder_layers=args.num_decoder_layers,
+                            dropout=args.dropout,
+                            attention_dropout=args.attn_dropout,
+                            src_dictionary=src_vocab, 
+                            tgt_dictionary=tgt_vocab)
     model.to(rank)
     model = DDP(model, device_ids=[rank])
-    print(model)
+    
+    if rank == 0:
+        print(model)
+    
     # data load
-    train_loader = dataloader.get_train_loader(args.train_src, args.train_tgt, src_vocab, tgt_vocab,  batch_size=args.batch_size, world_size=args.world_size, rank=rank)
-    valid_loader = dataloader.get_valid_loader(args.valid_src, args.train_tgt, src_vocab, tgt_vocab,  batch_size=args.batch_size)
+    train_loader, sampler = dataloader.get_train_parallel_loader(args.train_src, args.train_tgt, src_vocab, tgt_vocab,  batch_size=args.batch_size, world_size=args.world_size, rank=rank)
+    valid_loader = dataloader.get_valid_parallel_loader(args.valid_src, args.train_tgt, src_vocab, tgt_vocab,  batch_size=args.batch_size)
 
     data = {
         'dataloader': {'train': train_loader, 'valid':valid_loader}
@@ -146,10 +155,11 @@ def train(rank,  args):
 
 
     trainer = Trainer(model, data,  args)
-    for epoch in range(args.epoch_size):
+    for epoch in range(1,args.epoch_size):
         trainer.mt_step()
         trainer.evaluate(epoch)
         trainer.save_checkpoint(epoch)
+        sampler.set_epoch(epoch)
 
 def translate(args):
     batch_size = args.batch_size
@@ -161,6 +171,9 @@ def translate(args):
     model.load_state_dict({k : data['module'][k]  for k in data['module']})
     model.cuda()
     model.eval()
+   
+    if 'epoch' in data:
+        print(f"Loading model from epoch_{data['epoch']}....")
 
     src_sent =  open(args.src, "r").readlines()
     for i in range(0, len(src_sent), batch_size):
@@ -169,15 +182,21 @@ def translate(args):
         lengths = torch.LongTensor([len(s)+2 for s in word_ids])
         batch = torch.LongTensor(lengths.max().item(), lengths.size(0)).fill_(src_vocab.pad_index)
         batch[0] = src_vocab.bos_index
+       
         for j,s in enumerate(word_ids):
             if lengths[j] > 2:
                 batch[1:lengths[j]-1,j].copy_(s)
             batch[lengths[j]-1,j] = src_vocab.eos_index
+       
         batch = batch.cuda() 
         encoder_out = model.encoder(batch)
+       
         with torch.no_grad():
-            generated = model.decoder.generate_beam(encoder_out, beam_size=5)
-
+            if args.beam == 1:
+                generated = model.decoder.generate_greedy(encoder_out)
+            else:
+                generated = model.decoder.generate_beam(encoder_out, beam_size=5)
+        
         for j, s in enumerate(src_sent[i:i+batch_size]):
             print(f"Source_{i+j}: {s.strip()}")
             hypo = []
@@ -192,6 +211,9 @@ def translate(args):
 def init_exp(args):
     if not os.path.exists(args.dump_path):
         os.makedirs(args.dump_path)
+
+
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -217,14 +239,25 @@ if __name__ == "__main__":
 
     parser.add_argument("--dump_path", type=str, default="checkpoint/ldc")
     parser.add_argument("--reload_path", type=str, default="")
-    parser.add_argument("--optim", type=str, default="adam_inverse_sqrt,beta1=0.9,beta2=0.98,lr=0.0005")
+    parser.add_argument("--optim", type=str, default="adam_inverse_sqrt,warmup_updates=4000,beta1=0.9,beta2=0.98,lr=0.0005")
+
+    # for model architechture
+    parser.add_argument("--d_model", type=int, default=512)
+    parser.add_argument("--nhead", type=int, default=8)
+    parser.add_argument("--num_encoder_layers", type=int, default=6)
+    parser.add_argument("--num_decoder_layers", type=int, default=6)
+    parser.add_argument("--dropout", type=float, default=0.3)
+    parser.add_argument("--attn_dropout", type=float, default=0.1)
+
 
     # for inference
     parser.add_argument("--src", type=str, default="")
-    
-    args = parser.parse_args()
+    parser.add_argument("--beam", type=int, default=5)
 
+    args = parser.parse_args()
+    print(args)
     init_exp(args)
+    
     if args.mode == 'train': 
         run_train(train, args)
     else:

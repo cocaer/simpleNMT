@@ -258,5 +258,4 @@ def get_optimizer(parameters, s):
     if not all(k in expected_args[2:] for k in optim_params.keys()):
         raise Exception('Unexpected parameters: expected "%s", got "%s"' % (
             str(expected_args[2:]), str(optim_params.keys())))
-
     return optim_fn(parameters, **optim_params)

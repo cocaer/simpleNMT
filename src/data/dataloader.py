@@ -6,7 +6,7 @@ import torch.utils.data as data
 
 PAD_WORD = -1 
 
-class Dataset(data.Dataset):
+class ParallelDataset(data.Dataset):
     """Custom data.Dataset compatible with data.DataLoader."""
     def __init__(self, src_path, trg_path, src_word2id, trg_word2id):
         """Reads source and target sequences from txt files."""
@@ -39,7 +39,7 @@ class Dataset(data.Dataset):
         return sequence
 
 
-def collate_fn(data):
+def parallel_collate_fn(data):
     """Creates mini-batch tensors from the list of tuples (src_seq, trg_seq).
     We should build a custom collate_fn rather than using default collate_fn,
     because merging sequences (including padding) is not supported in default.
@@ -75,7 +75,7 @@ def collate_fn(data):
     return src_seqs, src_lengths, trg_seqs, trg_lengths
 
 
-def get_train_loader(src_path, trg_path, src_word2id, trg_word2id, batch_size, world_size, rank):
+def get_train_parallel_loader(src_path, trg_path, src_word2id, trg_word2id, batch_size, world_size, rank):
     """Returns data loader for custom dataset.
     Args:
         src_path: txt file path for source domain.
@@ -86,7 +86,7 @@ def get_train_loader(src_path, trg_path, src_word2id, trg_word2id, batch_size, w
     Returns:
         data_loader: data loader for custom dataset.
     """
-    dataset = Dataset(src_path, trg_path, src_word2id, trg_word2id)
+    dataset = ParallelDataset(src_path, trg_path, src_word2id, trg_word2id)
     global PAD_WORD
     PAD_WORD = src_word2id.index('<pad>')
 
@@ -97,18 +97,18 @@ def get_train_loader(src_path, trg_path, src_word2id, trg_word2id, batch_size, w
     )
     data_loader = torch.utils.data.DataLoader(dataset=dataset,
                                               batch_size=batch_size,
-                                              collate_fn=collate_fn,
+                                              collate_fn=parallel_collate_fn,
                                               sampler = sampler,
                                               )
-    return data_loader
+    return data_loader, sampler
 
-def get_valid_loader(src_path, trg_path, src_word2id, trg_word2id, batch_size):
-    dataset = Dataset(src_path, trg_path, src_word2id, trg_word2id)
+def get_valid_parallel_loader(src_path, trg_path, src_word2id, trg_word2id, batch_size):
+    dataset = ParallelDataset(src_path, trg_path, src_word2id, trg_word2id)
     global PAD_WORD
     PAD_WORD = src_word2id.index('<pad>')
     data_loader = torch.utils.data.DataLoader(dataset=dataset,
                                               batch_size=batch_size,
                                               shuffle=False,
-                                              collate_fn=collate_fn)
+                                              collate_fn=parallel_collate_fn)
     return data_loader
                       
