@@ -1,6 +1,6 @@
 # Less is more
 
-This repository aims to provide the minimal functions for NMT training and be easy  and flexiable as possible to modify for research.
+This repository aims to provide the minimal functions for NMT training and be easy  and flexiable to adapt for research.
 
 ## Step 1. Train NMT Model 
 
@@ -54,8 +54,8 @@ done
 ## Results
 ***
 
-||nist02 | nist03 | nist04 |nist05 |nist08 | avg
-|---|---- | --- | ---| ---    | ---   | --- | ---
-|fariseq| 47.16| 46.16 | 47.09|46.33    | 38.11   | 44.93
-|simpleNMT| 47.80| 46.08 | 47.57|46.97    | 36.55   | 44.99
+|nist02 | nist03 | nist04 |nist05 |nist08 | avg|
+|---|---- | --- | ---| ---    | ---   |
+|fariseq| 47.16| 46.16 | 47.09|46.33    | 38.11   | 44.93 |
+|simpleNMT| 47.80| 46.08 | 47.57|46.97    | 36.55   | 44.99 |
 
