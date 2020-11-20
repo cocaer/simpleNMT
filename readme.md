@@ -17,7 +17,7 @@ CUDA_VISIBLE_DEVICES=1,2,3,4,5 python mt_task.py train \
     --optim 'adam_inverse_sqrt,warmup_updates=4000,beta1=0.9,beta2=0.98,lr=0.0005' \
     --epoch_size 200000 \
     --batch_size 45 \
-    --world_size 1 \
+    --world_size 5 \
     --max_epoch 50 --seed 20 \
     --dump_path  $dump_path \
     --d_model 512 \
