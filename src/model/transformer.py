@@ -133,13 +133,13 @@ class TransformerDecoder(nn.Module):
         loss = self.loss_fn(scores, y)
         return loss, scores   
 
-    def generate_greedy(self, encoder_out, max_len=200):
+    def generate_greedy(self, encoder_out, tgt_langid=None, max_len=200):
         
         bsz = encoder_out['encoder_out'].size(1)
         generated = torch.LongTensor(max_len,bsz).fill_(self.dictionary.pad_index).to(encoder_out['src_key_padding_mask'].device)
         cur_len = 1
         unfinished = generated.new(bsz).long().fill_(1)
-        generated[0] = self.dictionary.bos_index
+        generated[0] = self.dictionary.bos_index if not tgt_langid else tgt_langid
         while cur_len < max_len:
             tensor = self.forward(generated[:cur_len], encoder_out) # [s, n , dim]
             tensor = tensor[-1,:,:]                                                     # [1, n, dim]
@@ -154,14 +154,14 @@ class TransformerDecoder(nn.Module):
             generated[-1].masked_fill_(unfinished.byte(), self.dictionary.eos_index) 
         return generated.t()
 
-    def generate_beam(self, encoder_out, max_len=200, beam_size=1):
+    def generate_beam(self, encoder_out, tgt_langid=None, max_len=200, beam_size=1):
         
         bsz = encoder_out['encoder_out'].size(1)
         device = encoder_out['src_key_padding_mask'].device
         _expand_encoder_out(encoder_out, beam_size)
         
         generated = torch.LongTensor(max_len, bsz*beam_size).fill_(self.dictionary.pad_index).to(device)
-        generated[0] = self.dictionary.bos_index
+        generated[0] = self.dictionary.bos_index if not tgt_langid else tgt_langid
 
         beam_scores = torch.FloatTensor(bsz, beam_size).fill_(0).to(device)
         beam_scores[:,1:] = -1e9  # assume first word bos always from first beam

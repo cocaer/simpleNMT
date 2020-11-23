@@ -3,9 +3,6 @@ import json
 import torch
 import torch.utils.data as data
 
-
-PAD_WORD = -1 
-
 class ParallelDataset(data.Dataset):
     """Custom data.Dataset compatible with data.DataLoader."""
     def __init__(self, src_path, trg_path, src_word2id, trg_word2id):
@@ -15,8 +12,14 @@ class ParallelDataset(data.Dataset):
         self.num_total_seqs = len(self.src_seqs)
         self.src_word2id = src_word2id
         self.trg_word2id = trg_word2id
-        self.pad_index = src_word2id.index('<pad>')
+        self.pad_index = src_word2id.pad_index
+        self.bos_index = src_word2id.bos_index
+        self.eos_index = src_word2id.eos_index
 
+        assert len(src_seqs) == len(trg_seqs)
+        assert src_word2id.pad_index == trg_word2id.pad_index and  src_word2id.bos_index == trg_word2id.bos_index \
+               and src_word2id.eos_index == trg_word2id.eos_index
+               
     def __getitem__(self, index):
         """Returns one data pair (source and target)."""
         src_seq = self.src_seqs[index]
@@ -32,83 +35,60 @@ class ParallelDataset(data.Dataset):
         """Converts words to ids."""
         tokens = sequence.split()
         sequence = []
-        sequence.append(word2id.index('<s>'))
+        sequence.append(self.bos_index)
         sequence.extend([word2id.index(token) for token in tokens])
-        sequence.append(word2id.index('</s>'))
+        sequence.append(self.eos_index)
         sequence = torch.Tensor(sequence)
         return sequence
 
+    def parallel_collate_fn(self, data):
+        def merge(sequences):
+            lengths = [len(seq) for seq in sequences]
+            padded_seqs = torch.zeros(len(sequences), max(lengths)).long().fill_(self.pad_index)
+            for i, seq in enumerate(sequences):
+                end = lengths[i]
+                padded_seqs[i, :end] = seq[:end]
+            return padded_seqs, lengths
 
-def parallel_collate_fn(data):
-    """Creates mini-batch tensors from the list of tuples (src_seq, trg_seq).
-    We should build a custom collate_fn rather than using default collate_fn,
-    because merging sequences (including padding) is not supported in default.
-    Seqeuences are padded to the maximum length of mini-batch sequences (dynamic padding).
-    Args:
-        data: list of tuple (src_seq, trg_seq).
-            - src_seq: torch tensor of shape (?); variable length.
-            - trg_seq: torch tensor of shape (?); variable length.
-    Returns:
-        src_seqs: torch tensor of shape (batch_size, padded_length).
-        src_lengths: list of length (batch_size); valid length for each padded source sequence.
-        trg_seqs: torch tensor of shape (batch_size, padded_length).
-        trg_lengths: list of length (batch_size); valid length for each padded target sequence.
-    """
-    def merge(sequences):
-        lengths = [len(seq) for seq in sequences]
-        padded_seqs = torch.zeros(len(sequences), max(lengths)).long().fill_(PAD_WORD)
-        for i, seq in enumerate(sequences):
-            end = lengths[i]
-            padded_seqs[i, :end] = seq[:end]
-        return padded_seqs, lengths
+        data.sort(key=lambda x: len(x[0]), reverse=True)
 
-    # sort a list by sequence length (descending order) to use pack_padded_sequence
-    data.sort(key=lambda x: len(x[0]), reverse=True)
+        src_seqs, trg_seqs = zip(*data)
 
-    # seperate source and target sequences
-    src_seqs, trg_seqs = zip(*data)
+        src_seqs, src_lengths = merge(src_seqs)
+        trg_seqs, trg_lengths = merge(trg_seqs)
 
-    # merge sequences (from tuple of 1D tensor to 2D tensor)
-    src_seqs, src_lengths = merge(src_seqs)
-    trg_seqs, trg_lengths = merge(trg_seqs)
-
-    return src_seqs, src_lengths, trg_seqs, trg_lengths
-
-
-def get_train_parallel_loader(src_path, trg_path, src_word2id, trg_word2id, batch_size, world_size, rank):
-    """Returns data loader for custom dataset.
-    Args:
-        src_path: txt file path for source domain.
-        trg_path: txt file path for target domain.
-        src_word2id: word-to-id dictionary (source domain).
-        trg_word2id: word-to-id dictionary (target domain).
-        batch_size: mini-batch size.
-    Returns:
-        data_loader: data loader for custom dataset.
-    """
+        return src_seqs, src_lengths, trg_seqs, trg_lengths
+    
+def get_train_parallel_loader(src_path, trg_path, src_word2id, trg_word2id, batch_size):
     dataset = ParallelDataset(src_path, trg_path, src_word2id, trg_word2id)
-    global PAD_WORD
-    PAD_WORD = src_word2id.index('<pad>')
-
-    sampler =  torch.utils.data.distributed.DistributedSampler(
-        dataset,
-        num_replicas=world_size,
-        rank=rank
-    )
+    sampler =  torch.utils.data.distributed.DistributedSampler(dataset)
     data_loader = torch.utils.data.DataLoader(dataset=dataset,
-                                              batch_size=batch_size,
-                                              collate_fn=parallel_collate_fn,
-                                              sampler = sampler,
-                                              )
-    return data_loader, sampler
+                                            batch_size=batch_size,
+                                            collate_fn=dataset.parallel_collate_fn,
+                                            sampler = sampler,
+                                            )
+    return data_loader
 
 def get_valid_parallel_loader(src_path, trg_path, src_word2id, trg_word2id, batch_size):
     dataset = ParallelDataset(src_path, trg_path, src_word2id, trg_word2id)
-    global PAD_WORD
-    PAD_WORD = src_word2id.index('<pad>')
     data_loader = torch.utils.data.DataLoader(dataset=dataset,
-                                              batch_size=batch_size,
-                                              shuffle=False,
-                                              collate_fn=parallel_collate_fn)
+                                            batch_size=batch_size,
+                                            shuffle=False,
+                                            collate_fn=dataset.parallel_collate_fn)
     return data_loader
                       
+
+
+
+
+class MultiParallelDataset(data.Dataset):
+    def __init__(self, src_path, trg_path, src_word2id, trg_word2id):
+        super(MultiParallelDataset, self).__init__()
+        pass
+
+    def __getitem__(self, index):
+        pass
+        
+  
+
+        
