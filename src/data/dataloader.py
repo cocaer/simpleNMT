@@ -2,10 +2,12 @@
 import json
 import torch
 import torch.utils.data as data
+import bisect
+
 
 class ParallelDataset(data.Dataset):
     """Custom data.Dataset compatible with data.DataLoader."""
-    def __init__(self, src_path, trg_path, src_word2id, trg_word2id):
+    def __init__(self, src_path, trg_path, src_word2id, trg_word2id, special_bos=None):
         """Reads source and target sequences from txt files."""
         self.src_seqs = open(src_path).read().splitlines()
         self.trg_seqs = open(trg_path).read().splitlines()
@@ -13,9 +15,9 @@ class ParallelDataset(data.Dataset):
         self.src_word2id = src_word2id
         self.trg_word2id = trg_word2id
         self.pad_index = src_word2id.pad_index
-        self.bos_index = src_word2id.bos_index
+        self.src_bos_index = src_word2id.bos_index
+        self.tgt_bos_index = src_word2id.bos_index if special_bos else special_bos
         self.eos_index = src_word2id.eos_index
-
         assert len(src_seqs) == len(trg_seqs)
         assert src_word2id.pad_index == trg_word2id.pad_index and  src_word2id.bos_index == trg_word2id.bos_index \
                and src_word2id.eos_index == trg_word2id.eos_index
@@ -35,7 +37,8 @@ class ParallelDataset(data.Dataset):
         """Converts words to ids."""
         tokens = sequence.split()
         sequence = []
-        sequence.append(self.bos_index)
+        bos_index = self.src_bos_index if not trg else self.tgt_bos_index
+        sequence.append(bos_index)
         sequence.extend([word2id.index(token) for token in tokens])
         sequence.append(self.eos_index)
         sequence = torch.Tensor(sequence)
@@ -81,14 +84,35 @@ def get_valid_parallel_loader(src_path, trg_path, src_word2id, trg_word2id, batc
 
 
 
-class MultiParallelDataset(data.Dataset):
-    def __init__(self, src_path, trg_path, src_word2id, trg_word2id):
+class MultiParallelDataset(data.ConcatDataset):
+    def __init__(self, langs, path_prefix, src_word2id, trg_word2id):
         super(MultiParallelDataset, self).__init__()
-        pass
-
-    def __getitem__(self, index):
-        pass
+        self.datasets = _load(langs, path_prefix)
         
+
+    @staticmethod
+    def _load(langs, path_prefix, src_word2id, trg_word2id):
+        datasets = []
+        for step, prefix in  zip(langs, path_prefix):
+            src, trg = step.split('-')
+            src_path = f'{prefix}.{src}'
+            trg_path = f'{prefix}.{trg}'
+            assert f'<2{trg}>' in trg_word2id.word2id
+            special_bos = trg_word2id.word2id['<2{trg}>']
+            datasets.append(ParallelDataset(src_path, trg_path, src_word2id, trg_word2id, special_bos))
+        return datasets
+
+
+
+
+
+
+
+
+
+
+
+
   
 
         
