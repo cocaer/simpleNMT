@@ -38,9 +38,11 @@ class Trainer(object):
         if args.reload_path != "":
             self.load_checkpoint(args.reload_path)
 
-    def mt_step(self):
+    def mt_step(self, epoch):
         self.model.train()
         n_sentences = 0
+
+        self.data['train'].sampler.set_epoch(epoch)
         while n_sentences < self.args.epoch_size:
             for i, batch in enumerate(iter(self.data['train'])):
                 src, _, tgt, _ = batch
@@ -53,13 +55,13 @@ class Trainer(object):
                 self.optimizer.zero_grad()
                 loss.backward()
                 self.optimizer.step()   
-
                 n_sentences += y_label.size(0)
+             
                 if n_sentences >= self.args.epoch_size:
                     break
+             
                 if i % 20 == 0:
                     self.logger.info(f"loss: {loss.item():.4f}")
-
 
     def load_checkpoint(self, path):
         
@@ -129,7 +131,8 @@ def train(rank,  args):
     torch.cuda.set_device(rank)
     src_vocab = Dictionary.read_vocab(args.vocab_src)
     tgt_vocab = Dictionary.read_vocab(args.vocab_tgt)
-
+    batch_size = args.batch_size
+    
     # model init 
     model = TransformerModel(d_model=args.d_model, 
                             nhead=args.nhead, 
@@ -146,8 +149,8 @@ def train(rank,  args):
         print(model)
     
     # data load
-    train_loader, sampler = dataloader.get_train_parallel_loader(args.train_src, args.train_tgt, src_vocab, tgt_vocab,  batch_size=args.batch_size, world_size=args.world_size, rank=rank)
-    valid_loader = dataloader.get_valid_parallel_loader(args.valid_src, args.train_tgt, src_vocab, tgt_vocab,  batch_size=args.batch_size)
+    train_loader = dataloader.get_train_parallel_loader(args.train_src, args.train_tgt, src_vocab, tgt_vocab,  batch_size=batch_size)
+    valid_loader = dataloader.get_valid_parallel_loader(args.valid_src, args.valid_tgt, src_vocab, tgt_vocab,  batch_size=batch_size)
 
     data = {
         'dataloader': {'train': train_loader, 'valid':valid_loader}
@@ -156,10 +159,9 @@ def train(rank,  args):
 
     trainer = Trainer(model, data,  args)
     for epoch in range(1,args.epoch_size):
-        trainer.mt_step()
+        trainer.mt_step(epoch)
         trainer.evaluate(epoch)
         trainer.save_checkpoint(epoch)
-        sampler.set_epoch(epoch)
 
 def translate(args):
     batch_size = args.batch_size
