@@ -19,6 +19,8 @@ class ParallelDataset(data.Dataset):
         self.tgt_bos_index = src_word2id.bos_index if special_bos else special_bos
         self.eos_index = src_word2id.eos_index
         assert len(src_seqs) == len(trg_seqs)
+
+        assert len(self.src_seqs) == len(self.trg_seqs)
         assert src_word2id.pad_index == trg_word2id.pad_index and  src_word2id.bos_index == trg_word2id.bos_index \
                and src_word2id.eos_index == trg_word2id.eos_index
                
