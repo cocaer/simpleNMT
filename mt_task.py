@@ -164,7 +164,7 @@ def train(rank,  args):
 
 
     trainer = Trainer(model, data,  args)
-    for epoch in range(1,args.epoch_size):
+    for epoch in range(1,args.max_epoch):
         trainer.mt_step(epoch)
         trainer.evaluate(epoch)
         trainer.save_checkpoint(epoch)
