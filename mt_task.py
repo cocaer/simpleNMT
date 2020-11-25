@@ -9,6 +9,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from src.utils.logger import create_logger
+from src.utils import utils
 
 
 def setup(rank, world_size, master_addr='localhost', master_port='12345'):
@@ -61,7 +62,8 @@ class Trainer(object):
                     break
              
                 if i % 20 == 0:
-                    self.logger.info(f"loss: {loss.item():.4f}")
+                    lr, num_updates = self.optimizer.param_groups[0]['lr'], self.optimizer.param_groups[0]['num_updates']
+                    self.logger.info(f"epoch: {epoch} | loss: {loss.item():.4f} | ppl: {utils.get_perplexity(loss.item()):.2f} | lr: {lr:.4e} | num_updates: {num_updates + 19}")
 
     def load_checkpoint(self, path):
         
@@ -120,7 +122,7 @@ class Trainer(object):
        
         valid_loss /= ntokens
         self.logger.info(f"=============== Evaluation ==================")
-        self.logger.info(f"loss on valid set: {valid_loss}")
+        self.logger.info(f"Evaluation on valid set :: epoch: {epoch} | loss: {loss.item():.4f} | ppl: {utils.get_perplexity(loss.item()):.2f}")
         self.save_best_checkpoint(epoch, valid_loss)
 
 def train(rank,  args):
@@ -147,6 +149,10 @@ def train(rank,  args):
     
     if rank == 0:
         print(model)
+    print('num. model params: {} (num. trained: {})'.format(
+        sum(p.numel() for p in model.parameters()),
+        sum(p.numel() for p in model.parameters() if p.requires_grad),
+        ))
     
     # data load
     train_loader = dataloader.get_train_parallel_loader(args.train_src, args.train_tgt, src_vocab, tgt_vocab,  batch_size=batch_size)
